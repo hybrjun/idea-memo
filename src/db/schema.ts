@@ -16,6 +16,17 @@ export class IdeaMemoDatabase extends Dexie {
       tags: '&id, normalizedText, createdAt',
       relations: '&id, fromMemoId, toMemoId, type, [fromMemoId+toMemoId]',
     });
+
+    this.version(2).stores({
+      memos: '&id, status, editStage, createdAt, updatedAt, freshnessScore, *tagIds',
+      tags: '&id, normalizedText, createdAt',
+      relations: '&id, fromMemoId, toMemoId, type, [fromMemoId+toMemoId]',
+    }).upgrade((tx) => {
+      // 既存の relation に manualTagIds フィールドを追加（旧 sharedTagIds は自動タグとして保持）
+      return tx.table('relations').toCollection().modify((rel) => {
+        if (rel.manualTagIds === undefined) rel.manualTagIds = [];
+      });
+    });
   }
 }
 

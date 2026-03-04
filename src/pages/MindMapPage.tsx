@@ -47,6 +47,7 @@ export function MindMapPage() {
         type: 'both',
         strength: existing.strength,
         sharedTagIds: existing.sharedTagIds,
+        manualTagIds: existing.manualTagIds ?? [],
       });
     } else {
       // 新規手動接続
@@ -56,6 +57,7 @@ export function MindMapPage() {
         type: 'manual',
         strength: 1.0,
         sharedTagIds: [],
+        manualTagIds: [],
       });
     }
     await reloadRelations();
@@ -66,10 +68,10 @@ export function MindMapPage() {
     setRelations((prev) => prev.filter((r) => r.id !== relationId));
   }, []);
 
-  const handleRelationTagsUpdate = useCallback(async (relationId: string, sharedTagIds: string[]) => {
-    await getStorageAdapter().updateRelationTags(relationId, sharedTagIds);
+  const handleRelationTagsUpdate = useCallback(async (relationId: string, manualTagIds: string[]) => {
+    await getStorageAdapter().updateRelationTags(relationId, manualTagIds);
     setRelations((prev) =>
-      prev.map((r) => r.id === relationId ? { ...r, sharedTagIds } : r)
+      prev.map((r) => r.id === relationId ? { ...r, manualTagIds } : r)
     );
   }, []);
 

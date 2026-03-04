@@ -24,9 +24,160 @@ import type { Tag } from '../../types/tag';
 const nodeTypes = { memoNode: MemoNode };
 const edgeTypes = { manualEdge: ManualEdge, keywordEdge: KeywordEdge };
 
-// ─── 交差最小化ユーティリティ ───────────────────────────────────────────────
+// ─── エッジルーティング ───────────────────────────────────────────────────────
 
 type P2 = { x: number; y: number };
+
+const NODE_DEFAULT_W = 200;
+const NODE_DEFAULT_H = 110;
+const AVOID_MARGIN   = 50;  // ノード境界の外側マージン（px）
+const MIN_MID_DIST   = 70;  // エッジ中点同士の最低距離（px）
+
+function nodeCenterOf(n: Node): P2 {
+  return {
+    x: n.position.x + (n.width  ?? NODE_DEFAULT_W) / 2,
+    y: n.position.y + (n.height ?? NODE_DEFAULT_H) / 2,
+  };
+}
+
+/** 点 p から線分 ab への最短距離と、線分上のパラメータ t（0〜1）を返す */
+function pointToSegDist(p: P2, a: P2, b: P2): { dist: number; t: number } {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1) return { dist: Math.hypot(p.x - a.x, p.y - a.y), t: 0 };
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+  return { dist: Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy)), t };
+}
+
+/**
+ * 2次ベジェ（制御点 = 中点 + 法線 * offset）の t=0.5 時点の座標
+ * = 0.25*start + 0.5*ctrl + 0.25*end
+ */
+function quadBezierMid(sx: number, sy: number, tx: number, ty: number, offset: number): P2 {
+  const mx = (sx + tx) / 2, my = (sy + ty) / 2;
+  const len = Math.hypot(tx - sx, ty - sy) || 1;
+  const nx = -(ty - sy) / len, ny = (tx - sx) / len; // 法線（左向き）
+  const cpx = mx + nx * offset, cpy = my + ny * offset;
+  return { x: 0.25 * sx + 0.5 * cpx + 0.25 * tx, y: 0.25 * sy + 0.5 * cpy + 0.25 * ty };
+}
+
+/**
+ * 各エッジに「法線方向の制御点オフセット（px）」を割り当てる。
+ * - 正値 → 法線の左方向に膨らむ
+ * - 負値 → 右方向に膨らむ
+ *
+ * 処理:
+ * 1. ノード回避: 直線経路に別ノードが被る場合、反対側に押し出す
+ * 2. 中点分離: 複数エッジの中点が近い場合、交互に正負を割り当て分散
+ */
+function computeEdgeOffsets(nodes: Node[], edges: Edge[]): Map<string, number> {
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const offsets  = new Map<string, number>(edges.map((e) => [e.id, 0]));
+
+  // 1. ノード回避
+  for (const edge of edges) {
+    const sn = nodeMap.get(edge.source);
+    const tn = nodeMap.get(edge.target);
+    if (!sn || !tn) continue;
+    const sa = nodeCenterOf(sn);
+    const ta = nodeCenterOf(tn);
+
+    let bestForce = 0, bestSide = 1;
+
+    for (const node of nodes) {
+      if (node.id === edge.source || node.id === edge.target) continue;
+      const nc  = nodeCenterOf(node);
+      const hw  = (node.width  ?? NODE_DEFAULT_W) / 2 + AVOID_MARGIN;
+      const hh  = (node.height ?? NODE_DEFAULT_H) / 2 + AVOID_MARGIN;
+      const thr = Math.max(hw, hh);
+
+      const { dist, t } = pointToSegDist(nc, sa, ta);
+      if (dist < thr && t > 0.1 && t < 0.9) {
+        const dx = ta.x - sa.x, dy = ta.y - sa.y;
+        // cross product: 正 → node は左側 → 右に逃げる（side=-1）
+        const cross = dx * (nc.y - sa.y) - dy * (nc.x - sa.x);
+        const side  = cross > 0 ? -1 : 1;
+        const force = (thr - dist) / thr;
+        if (force > bestForce) { bestForce = force; bestSide = side; }
+      }
+    }
+
+    if (bestForce > 0) {
+      offsets.set(edge.id, bestSide * (80 + bestForce * 120));
+    }
+  }
+
+  // 2. エッジ交差解消（直線が交差するペアを逆方向に曲げる）
+  for (let i = 0; i < edges.length; i++) {
+    for (let j = i + 1; j < edges.length; j++) {
+      const ei = edges[i], ej = edges[j];
+      // 端点を共有するエッジは交差にならない
+      if (ei.source === ej.source || ei.source === ej.target ||
+          ei.target === ej.source || ei.target === ej.target) continue;
+      const sni = nodeMap.get(ei.source), tni = nodeMap.get(ei.target);
+      const snj = nodeMap.get(ej.source), tnj = nodeMap.get(ej.target);
+      if (!sni || !tni || !snj || !tnj) continue;
+      const a = nodeCenterOf(sni), b = nodeCenterOf(tni);
+      const c = nodeCenterOf(snj), d = nodeCenterOf(tnj);
+      // CCW 判定で線分交差チェック（端点共有なし）
+      const ccwFn = (p: P2, q: P2, r: P2) =>
+        (r.y - p.y) * (q.x - p.x) > (q.y - p.y) * (r.x - p.x);
+      const intersects =
+        ccwFn(a, c, d) !== ccwFn(b, c, d) &&
+        ccwFn(a, b, c) !== ccwFn(a, b, d);
+      if (!intersects) continue;
+
+      const ci = offsets.get(ei.id) ?? 0;
+      const cj = offsets.get(ej.id) ?? 0;
+      // すでに十分に離れていればスキップ
+      if (Math.abs(ci) >= 80 || Math.abs(cj) >= 80) continue;
+      if (ci === 0 && cj === 0) {
+        offsets.set(ei.id,  100);
+        offsets.set(ej.id, -100);
+      } else if (ci === 0) {
+        offsets.set(ei.id, cj > 0 ? -100 : 100);
+      } else if (cj === 0) {
+        offsets.set(ej.id, ci > 0 ? -100 : 100);
+      }
+    }
+  }
+
+  // 3. 中点分離（近い中点を交互に押し出す）
+  const midMap = new Map<string, P2>();
+  const updateMid = (edge: Edge) => {
+    const sn = nodeMap.get(edge.source), tn = nodeMap.get(edge.target);
+    if (!sn || !tn) return;
+    const sa = nodeCenterOf(sn), ta = nodeCenterOf(tn);
+    midMap.set(edge.id, quadBezierMid(sa.x, sa.y, ta.x, ta.y, offsets.get(edge.id) ?? 0));
+  };
+  edges.forEach(updateMid);
+
+  for (let i = 0; i < edges.length; i++) {
+    for (let j = i + 1; j < edges.length; j++) {
+      const mi = midMap.get(edges[i].id);
+      const mj = midMap.get(edges[j].id);
+      if (!mi || !mj) continue;
+      if (Math.hypot(mi.x - mj.x, mi.y - mj.y) >= MIN_MID_DIST) continue;
+
+      const ci = offsets.get(edges[i].id) ?? 0;
+      const cj = offsets.get(edges[j].id) ?? 0;
+      if (ci === 0 && cj === 0) {
+        offsets.set(edges[i].id,  60);
+        offsets.set(edges[j].id, -60);
+      } else if (ci === 0) {
+        offsets.set(edges[i].id, cj > 0 ? -60 : 60);
+      } else if (cj === 0) {
+        offsets.set(edges[j].id, ci > 0 ? -60 : 60);
+      }
+      updateMid(edges[i]);
+      updateMid(edges[j]);
+    }
+  }
+
+  return offsets;
+}
+
+// ─── 交差最小化ユーティリティ ───────────────────────────────────────────────
 
 /** CCW（反時計回り）判定 */
 function ccw(a: P2, b: P2, c: P2): boolean {
@@ -345,7 +496,7 @@ export function MindMapCanvas({
         .slice(0, 2);
       const label = sharedLabels.join(' · ');
 
-      const kwStrokeWidth = Math.max(1, Math.round(rel.strength * 5));
+      const kwStrokeWidth = Math.max(3, Math.round(rel.strength * 8));
 
       // タイプ別に色・線スタイルを決定
       let stroke: string;
@@ -360,7 +511,7 @@ export function MindMapCanvas({
         strokeWidth = 2;
         strokeDasharray = '6 3';
       } else {
-        stroke = kwStrokeWidth >= 4 ? '#60a5fa' : '#bfdbfe'; // 青：自動のみ
+        stroke = kwStrokeWidth >= 6 ? '#60a5fa' : '#bfdbfe'; // 青：自動のみ
         strokeWidth = kwStrokeWidth;
         strokeDasharray = undefined;
       }
@@ -375,6 +526,7 @@ export function MindMapCanvas({
         data: needsManualUI
           ? {
               sharedTagIds: rel.sharedTagIds,
+              manualTagIds: rel.manualTagIds ?? [],
               relationType: rel.type,
               onDelete: (id: string) => onRelationDeleteRef.current?.(id),
               onTagsUpdate: (id: string, tagIds: string[]) =>
@@ -389,28 +541,55 @@ export function MindMapCanvas({
     [rawNodes, rawEdges]
   );
 
+  // エッジの法線オフセット（ノード回避 + 中点分離）を計算
+  const edgeOffsets = useMemo(() =>
+    computeEdgeOffsets(layoutedNodes, rawEdges),
+    [layoutedNodes, rawEdges]
+  );
+
+  // pathOffset をエッジ data に注入
+  const edgesWithOffsets = useMemo(() =>
+    rawEdges.map((e) => ({
+      ...e,
+      data: { ...e.data, pathOffset: edgeOffsets.get(e.id) ?? 0 },
+    })),
+    [rawEdges, edgeOffsets]
+  );
+
   const [nodes, setNodes, onNodesChange] = useNodesState(layoutedNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(rawEdges);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(edgesWithOffsets);
+
+  // 既知のエッジ ID セットを追跡し、新規追加を検出する
+  const knownEdgeIdsRef = useRef(new Set(rawEdges.map((e) => e.id)));
 
   useEffect(() => {
+    const currentIds = new Set(rawEdges.map((e) => e.id));
+    const hasNewEdge = [...currentIds].some((id) => !knownEdgeIdsRef.current.has(id));
+    knownEdgeIdsRef.current = currentIds;
+
     setNodes((current) => {
+      if (hasNewEdge) {
+        // 新規紐追加 → 交差・重なりを解消したレイアウトをそのまま適用
+        return layoutedNodes;
+      }
+      // それ以外 → ユーザーが移動した位置を保持
       const posMap = new Map(current.map((n) => [n.id, n.position]));
       return layoutedNodes.map((n) => ({
         ...n,
         position: posMap.has(n.id) ? posMap.get(n.id)! : n.position,
       }));
     });
-  }, [layoutedNodes, setNodes]);
+  }, [layoutedNodes, rawEdges, setNodes]);
 
   // rawEdges 更新時は選択状態を維持しながら反映
   useEffect(() => {
     setEdges((prev) => {
       const selectedIds = new Set(prev.filter((e) => e.selected).map((e) => e.id));
-      return rawEdges.map((e) =>
+      return edgesWithOffsets.map((e) =>
         selectedIds.has(e.id) ? { ...e, selected: true } : e
       );
     });
-  }, [rawEdges, setEdges]);
+  }, [edgesWithOffsets, setEdges]);
 
   const handleConnect = useCallback((connection: Connection) => {
     if (!connection.source || !connection.target) return;
@@ -451,7 +630,7 @@ export function MindMapCanvas({
               <div className="flex items-center gap-2 flex-wrap">
                 <span><span className="text-blue-400 font-bold">─</span> 自動</span>
                 <span><span className="text-amber-400 font-bold">╌</span> 手動</span>
-                <span><span className="text-violet-500 font-bold">─</span> 自動＋手動</span>
+                <span><span className="text-blue-400 font-bold">─</span><span className="text-amber-400 font-bold">╌</span> 自動＋手動</span>
               </div>
               <div className="text-gray-400">ハンドルをドラッグして接続 · 線をタップして編集</div>
             </div>

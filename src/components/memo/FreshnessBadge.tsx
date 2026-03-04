@@ -6,7 +6,7 @@ interface FreshnessBadgeProps {
 
 export function FreshnessBadge({ score }: FreshnessBadgeProps) {
   const color = getFreshnessColor(score);
-  const label = score >= 70 ? '新鮮' : score >= 40 ? '普通' : '眠り中';
+  const label = score >= 70 ? '新鮮' : score >= 40 ? '熟成' : '化石化';
 
   return (
     <span className="inline-flex items-center gap-1 text-xs text-gray-500">

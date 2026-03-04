@@ -28,6 +28,7 @@ export function computeRelations(
         type: 'keyword_overlap' as RelationType,
         strength,
         sharedTagIds,
+        manualTagIds: [],
       };
     })
     .filter((r) => r.strength >= RELATION_THRESHOLD)

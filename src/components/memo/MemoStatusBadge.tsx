@@ -2,7 +2,7 @@ import type { MemoStatus } from '../../types/memo';
 
 interface MemoStatusBadgeProps {
   status: MemoStatus;
-  onClick?: () => void;
+  onClick?: (e: React.MouseEvent) => void;
 }
 
 export function MemoStatusBadge({ status, onClick }: MemoStatusBadgeProps) {

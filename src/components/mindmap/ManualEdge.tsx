@@ -1,14 +1,16 @@
 import { useState, useEffect } from 'react';
-import { BaseEdge, EdgeLabelRenderer, getBezierPath, useReactFlow, type EdgeProps } from 'reactflow';
+import { BaseEdge, EdgeLabelRenderer, useReactFlow, type EdgeProps } from 'reactflow';
 import { useTagStore } from '../../store/tagStore';
 import { getStorageAdapter } from '../../db';
 import { getFloatingEdgeParams } from './floatingEdge';
 
 export interface ManualEdgeData {
-  sharedTagIds: string[];
+  sharedTagIds: string[];   // 自動タグ（読み取り専用）
+  manualTagIds: string[];   // 手動タグ（編集可能）
   relationType?: 'manual' | 'both';
   onDelete: (id: string) => void;
   onTagsUpdate: (id: string, tagIds: string[]) => void;
+  pathOffset?: number;
 }
 
 export function ManualEdge({
@@ -33,19 +35,32 @@ export function ManualEdge({
   const sourceNode = getNode(source);
   const targetNode = getNode(target);
 
-  let sx = sourceX, sy = sourceY, sp = sourcePosition;
-  let tx = targetX, ty = targetY, tp = targetPosition;
+  let sx = sourceX, sy = sourceY;
+  let tx = targetX, ty = targetY;
 
   if (sourceNode?.width && targetNode?.width) {
     const p = getFloatingEdgeParams(sourceNode, targetNode);
-    sx = p.sx; sy = p.sy; sp = p.sp;
-    tx = p.tx; ty = p.ty; tp = p.tp;
+    sx = p.sx; sy = p.sy;
+    tx = p.tx; ty = p.ty;
   }
 
-  const [edgePath, labelX, labelY] = getBezierPath({
-    sourceX: sx, sourceY: sy, sourcePosition: sp,
-    targetX: tx, targetY: ty, targetPosition: tp,
-  });
+  // 法線オフセットで制御点を計算する 2次ベジェ
+  // offset が未設定の場合は ID の大小で方向を決めた小さなデフォルト曲率を使う
+  const rawOffset = data?.pathOffset ?? 0;
+  const offset = Math.abs(rawOffset) < 1 ? (source < target ? 70 : -70) : rawOffset;
+  const mx = (sx + tx) / 2, my = (sy + ty) / 2;
+  const len = Math.hypot(tx - sx, ty - sy) || 1;
+  const nx = -(ty - sy) / len, ny = (tx - sx) / len;
+  const cpx = mx + nx * offset, cpy = my + ny * offset;
+  const edgePath = `M ${sx},${sy} Q ${cpx},${cpy} ${tx},${ty}`;
+  const labelX = 0.25 * sx + 0.5 * cpx + 0.25 * tx;
+
+  // 自動＋手動（both）のとき、青実線とオレンジ破線を平行に並べて描画する
+  const isBoth = data?.relationType === 'both';
+  const PARALLEL = 5; // 2本の線の間隔（片側 px）
+  const bluePath   = `M ${sx + nx * PARALLEL},${sy + ny * PARALLEL} Q ${cpx + nx * PARALLEL},${cpy + ny * PARALLEL} ${tx + nx * PARALLEL},${ty + ny * PARALLEL}`;
+  const orangePath = `M ${sx - nx * PARALLEL},${sy - ny * PARALLEL} Q ${cpx - nx * PARALLEL},${cpy - ny * PARALLEL} ${tx - nx * PARALLEL},${ty - ny * PARALLEL}`;
+  const labelY = 0.25 * sy + 0.5 * cpy + 0.25 * ty;
 
   useEffect(() => {
     if (!selected) {
@@ -54,10 +69,18 @@ export function ManualEdge({
     }
   }, [selected]);
 
-  const sharedTagIds = data?.sharedTagIds ?? [];
-  const sharedTags = tags.filter((t) => sharedTagIds.includes(t.id));
-  const availableTags = tags.filter((t) => !sharedTagIds.includes(t.id));
-  const tagLabel = sharedTags.map((t) => t.text).join(' · ');
+  // 自動タグ（読み取り専用）
+  const autoTagIds  = data?.sharedTagIds ?? [];
+  const autoTags    = tags.filter((t) => autoTagIds.includes(t.id));
+  // 手動タグ（編集可能）
+  const manualTagIds = data?.manualTagIds ?? [];
+  const manualTags   = tags.filter((t) => manualTagIds.includes(t.id));
+  // ラベル表示: 手動タグ優先、なければ自動タグ
+  const tagLabel = (manualTags.length > 0 ? manualTags : autoTags).map((t) => t.text).join(' · ');
+
+  // サジェスト対象: 既に追加済みのタグを除く
+  const usedIds      = new Set([...autoTagIds, ...manualTagIds]);
+  const availableTags = tags.filter((t) => !usedIds.has(t.id));
 
   const trimmed = inputText.trim();
   const filteredTags = trimmed
@@ -74,11 +97,11 @@ export function ManualEdge({
   const showCreateOption = trimmed.length > 0 && !hasExactMatch;
 
   const removeTag = (tagId: string) => {
-    data?.onTagsUpdate(id, sharedTagIds.filter((tid) => tid !== tagId));
+    data?.onTagsUpdate(id, manualTagIds.filter((tid) => tid !== tagId));
   };
 
   const addTag = (tagId: string) => {
-    data?.onTagsUpdate(id, [...sharedTagIds, tagId]);
+    data?.onTagsUpdate(id, [...manualTagIds, tagId]);
     setInputText('');
   };
 
@@ -86,7 +109,7 @@ export function ManualEdge({
     if (!trimmed) return;
     const newTag = await getStorageAdapter().findOrCreateTag(trimmed);
     await fetchTags();
-    data?.onTagsUpdate(id, [...sharedTagIds, newTag.id]);
+    data?.onTagsUpdate(id, [...manualTagIds, newTag.id]);
     setInputText('');
   };
 
@@ -108,7 +131,16 @@ export function ManualEdge({
   return (
     <>
       {/* エッジパス（SVGレイヤー）— ラベルはここで描かず EdgeLabelRenderer で描く */}
-      <BaseEdge id={id} path={edgePath} style={style} />
+      {isBoth ? (
+        <>
+          {/* 青実線（自動接続） */}
+          <path d={bluePath} fill="none" stroke="#60a5fa" strokeWidth={4} className="react-flow__edge-path" />
+          {/* オレンジ破線（手動接続）+ id で React Flow 選択処理と紐付け */}
+          <BaseEdge id={id} path={orangePath} style={{ stroke: '#f59e0b', strokeWidth: 2, strokeDasharray: '6 3' }} />
+        </>
+      ) : (
+        <BaseEdge id={id} path={edgePath} style={style} />
+      )}
 
       <EdgeLabelRenderer>
         <div
@@ -121,33 +153,58 @@ export function ManualEdge({
         >
           {selected ? (
             /* ── 選択時：タグ管理パネル ── */
-            <div className={`flex flex-col gap-2 bg-white rounded-2xl shadow-2xl border p-3 w-56 ${data?.relationType === 'both' ? 'border-violet-200' : 'border-amber-200'}`}>
+            <div className={`flex flex-col gap-2 bg-white rounded-2xl shadow-2xl border p-3 w-56 ${data?.relationType === 'both' ? 'border-blue-200' : 'border-amber-200'}`}>
 
               {/* 接続タイプバッジ */}
               {data?.relationType === 'both' && (
-                <div className="flex items-center gap-1 text-[10px] text-violet-600 font-medium">
-                  <span className="w-2 h-2 rounded-full bg-violet-500 inline-block" />
+                <div className="flex items-center gap-1 text-[10px] text-blue-600 font-medium">
+                  <span className="w-2 h-2 rounded-full bg-blue-400 inline-block" />
+                  <span className="w-2 h-2 rounded-full bg-amber-400 inline-block -ml-1" />
                   自動接続＋手動接続
                 </div>
               )}
 
-              {/* 設定済みタグ */}
-              {sharedTags.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {sharedTags.map((tag) => (
-                    <span
-                      key={tag.id}
-                      className="flex items-center gap-0.5 bg-amber-100 text-amber-800 rounded-full px-2 py-0.5 text-xs"
-                    >
-                      {tag.text}
-                      <button
-                        onClick={() => removeTag(tag.id)}
-                        className="ml-0.5 text-amber-500 leading-none active:opacity-60"
+              {/* 自動タグ（読み取り専用） */}
+              {autoTags.length > 0 && (
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] text-gray-400 font-medium">自動タグ（編集不可）</span>
+                  <div className="flex flex-wrap gap-1">
+                    {autoTags.map((tag) => (
+                      <span
+                        key={tag.id}
+                        className="bg-blue-50 text-blue-600 border border-blue-200 rounded-full px-2 py-0.5 text-xs"
                       >
-                        ×
-                      </button>
-                    </span>
-                  ))}
+                        {tag.text}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 手動タグ（編集可能） */}
+              {(manualTags.length > 0 || data?.relationType !== 'keyword_overlap') && (
+                <div className="flex flex-col gap-1">
+                  {autoTags.length > 0 && (
+                    <span className="text-[10px] text-gray-400 font-medium">手動タグ</span>
+                  )}
+                  {manualTags.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {manualTags.map((tag) => (
+                        <span
+                          key={tag.id}
+                          className="flex items-center gap-0.5 bg-amber-100 text-amber-800 rounded-full px-2 py-0.5 text-xs"
+                        >
+                          {tag.text}
+                          <button
+                            onClick={() => removeTag(tag.id)}
+                            className="ml-0.5 text-amber-500 leading-none active:opacity-60"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 

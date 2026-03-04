@@ -150,13 +150,16 @@ export class DexieAdapter implements IStorageAdapter {
     if (existing) {
       // 異なる型が混在する場合は 'both' に昇格（keyword_overlap が manual/both を降格させない）
       const resolvedType = existing.type === relation.type ? relation.type : 'both';
-      // sharedTagIds はユニオンでマージ（手動追加タグを keyword 更新で消さない）
-      const mergedTagIds = [...new Set([...existing.sharedTagIds, ...relation.sharedTagIds])];
+      // sharedTagIds（自動）: 新しい計算結果で置き換え
+      // manualTagIds（手動）: 既存を保持しつつ新規があればマージ
+      const mergedManualTagIds = [
+        ...new Set([...(existing.manualTagIds ?? []), ...(relation.manualTagIds ?? [])]),
+      ];
       const updated: Relation = {
         ...existing,
         ...relation,
         type: resolvedType,
-        sharedTagIds: mergedTagIds,
+        manualTagIds: mergedManualTagIds,
       };
       await db.relations.put(updated);
       return updated;
@@ -165,6 +168,7 @@ export class DexieAdapter implements IStorageAdapter {
     const newRelation: Relation = {
       id: crypto.randomUUID(),
       ...relation,
+      manualTagIds: relation.manualTagIds ?? [],
       createdAt: new Date(),
     };
     await db.relations.add(newRelation);
@@ -175,8 +179,8 @@ export class DexieAdapter implements IStorageAdapter {
     await db.relations.delete(id);
   }
 
-  async updateRelationTags(id: string, sharedTagIds: string[]): Promise<void> {
-    await db.relations.update(id, { sharedTagIds });
+  async updateRelationTags(id: string, manualTagIds: string[]): Promise<void> {
+    await db.relations.update(id, { manualTagIds });
   }
 
   async deleteRelationsForMemo(memoId: string): Promise<void> {

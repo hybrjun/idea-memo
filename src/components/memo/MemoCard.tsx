@@ -12,12 +12,16 @@ const MAX_VISIBLE_TAGS = 2;
 interface MemoCardProps {
   memo: Memo;
   tags: Tag[];
+  relationTags?: Tag[]; // 紐づけから派生したタグ
+  onStatusToggle?: (memo: Memo) => void;
 }
 
-export function MemoCard({ memo, tags }: MemoCardProps) {
+export function MemoCard({ memo, tags, relationTags = [], onStatusToggle }: MemoCardProps) {
   const navigate = useNavigate();
-  const visibleTags = tags.slice(0, MAX_VISIBLE_TAGS);
-  const hiddenCount = tags.length - MAX_VISIBLE_TAGS;
+  const allTags = [...tags, ...relationTags];
+  const visibleTags = allTags.slice(0, MAX_VISIBLE_TAGS);
+  const hiddenCount = allTags.length - MAX_VISIBLE_TAGS;
+  const relationTagIds = new Set(relationTags.map((t) => t.id));
 
   return (
     <div
@@ -40,7 +44,16 @@ export function MemoCard({ memo, tags }: MemoCardProps) {
       <div className="flex items-center justify-between gap-2 mt-2">
         <div className="flex items-center gap-1.5 min-w-0">
           {visibleTags.map((tag) => (
-            <TagChip key={tag.id} text={tag.text} />
+            relationTagIds.has(tag.id)
+              ? (
+                <span key={tag.id} className="inline-flex items-center gap-0.5 text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-2 py-0.5 shrink-0">
+                  <svg className="w-2.5 h-2.5 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                  </svg>
+                  {tag.text}
+                </span>
+              )
+              : <TagChip key={tag.id} text={tag.text} />
           ))}
           {hiddenCount > 0 && (
             <span className="text-xs text-gray-400 font-medium shrink-0">
@@ -52,7 +65,10 @@ export function MemoCard({ memo, tags }: MemoCardProps) {
           <span className="text-xs text-gray-400">
             {formatRelativeTime(memo.createdAt instanceof Date ? memo.createdAt : new Date(memo.createdAt))}
           </span>
-          <MemoStatusBadge status={memo.status} />
+          <MemoStatusBadge
+            status={memo.status}
+            onClick={onStatusToggle ? (e) => { e.stopPropagation(); onStatusToggle(memo); } : undefined}
+          />
         </div>
       </div>
     </div>
