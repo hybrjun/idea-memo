@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+/* React Flow のエッジラベルをノードカードより前面に表示する */
+.react-flow__edgelabel-renderer {
+  z-index: 9999 !important;
+}
+
+@layer base {
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply bg-gray-50 text-gray-900 min-h-screen;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+
+  /* スムーズなスクロール */
+  html {
+    scroll-behavior: smooth;
+  }
+}
